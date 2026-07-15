@@ -2,10 +2,56 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class ScaledMMFunction(torch.autograd.Function):
+    """
+    Custom Autograd function for torch._scaled_mm to support backpropagation in FP8 training.
+    """
+    @staticmethod
+    def forward(ctx, mat_a, mat_b, scale_a, scale_b, bias, out_dtype):
+        # mat_a: mat_a_fp8
+        # mat_b: mat_b_fp8
+        # scale_a: scale_a_inv
+        # scale_b: scale_b_inv
+        ctx.save_for_backward(mat_a, mat_b, scale_a, scale_b)
+        ctx.has_bias = bias is not None
+        
+        res = torch._scaled_mm(
+            mat_a,
+            mat_b,
+            scale_a=scale_a,
+            scale_b=scale_b,
+            bias=bias,
+            out_dtype=out_dtype
+        )
+        
+        if isinstance(res, tuple):
+            return res[0]
+        return res
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        mat_a, mat_b, scale_a, scale_b = ctx.saved_tensors
+        dtype = grad_output.dtype
+        
+        # scale_all = scale_a_inv * scale_b_inv
+        scale_all = scale_a * scale_b
+        
+        # dL/dmat_a_fp8 = (grad_output * scale_all) @ mat_b_fp8.t()
+        grad_mat_a = torch.matmul(grad_output * scale_all, mat_b.to(dtype).t())
+        
+        # dL/dmat_b_fp8 = mat_a_fp8.t() @ (grad_output * scale_all)
+        grad_mat_b = torch.matmul(mat_a.to(dtype).t(), grad_output * scale_all)
+        
+        # dL/dbias
+        grad_bias = grad_output.sum(dim=0) if ctx.has_bias else None
+        
+        return grad_mat_a, grad_mat_b, None, None, grad_bias, None
+
+
 class NativeConv2d(nn.Conv2d):
     """
     Custom Conv2d layer optimized for FP8 Tensor Cores in PyTorch 2.1+.
-    Uses GEMM-based convolution (im2col + torch._scaled_mm) for FP8 execution.
+    Uses GEMM-based convolution (im2col + ScaledMMFunction) for FP8 execution and training.
     """
     def __init__(self, *args, dtype_fwd=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -64,21 +110,16 @@ class NativeConv2d(nn.Conv2d):
             scale_a_inv = (1.0 / scale_a).view(1)
             scale_b_inv = (1.0 / scale_b).view(1)
 
-            # 4. Execute scaled MM (dynamically handle single tensor vs tuple return value)
+            # 4. Execute scaled MM using custom autograd function
             bias_val = self.bias if self.bias is not None else None
-            res = torch._scaled_mm(
+            out_gemm = ScaledMMFunction.apply(
                 mat_a_fp8,
                 mat_b_fp8,
-                scale_a=scale_a_inv,
-                scale_b=scale_b_inv,
-                bias=bias_val,
-                out_dtype=x.dtype
+                scale_a_inv,
+                scale_b_inv,
+                bias_val,
+                x.dtype
             )
-            
-            if isinstance(res, tuple):
-                out_gemm = res[0]
-            else:
-                out_gemm = res
 
             # 5. Reshape 2D GEMM output back to 4D Conv format: (N, out_channels, out_h, out_w)
             out = out_gemm.reshape(N, L, self.out_channels).transpose(1, 2).reshape(N, self.out_channels, out_h, out_w)
@@ -92,7 +133,7 @@ class NativeConv2d(nn.Conv2d):
 class NativeLinear(nn.Linear):
     """
     Custom Linear layer optimized for FP8 Tensor Cores in PyTorch 2.1+.
-    Uses torch._scaled_mm for FP8 execution.
+    Uses torch._scaled_mm for FP8 execution and training.
     """
     def __init__(self, *args, dtype_fwd=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -123,22 +164,16 @@ class NativeLinear(nn.Linear):
             scale_x_inv = (1.0 / scale_x).view(1)
             scale_w_inv = (1.0 / scale_w).view(1)
 
-            # 2. Execute scaled MM (dynamically handle single tensor vs tuple return value)
+            # 2. Execute scaled MM using custom autograd function
             bias_val = self.bias if self.bias is not None else None
-            res = torch._scaled_mm(
+            out = ScaledMMFunction.apply(
                 x_fp8,
                 w_fp8.t(),
-                scale_a=scale_x_inv,
-                scale_b=scale_w_inv,
-                bias=bias_val,
-                out_dtype=x.dtype
+                scale_x_inv,
+                scale_w_inv,
+                bias_val,
+                x.dtype
             )
-            
-            if isinstance(res, tuple):
-                out = res[0]
-            else:
-                out = res
-                
             return out
 
         except Exception as e:
