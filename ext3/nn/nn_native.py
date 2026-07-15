@@ -16,10 +16,18 @@ class NativeConv2d(nn.Conv2d):
         if not x.is_cuda or self.dtype_fwd is None:
             return super().forward(x)
 
+        # FP8 cuBLAS/Tensor Core Alignment check:
+        # mat_a shape: (N * L, C * kh * kw) -> K = C * kh * kw must be divisible by 16.
+        # mat_b shape: (C * kh * kw, out_channels) -> out_channels must be divisible by 16.
+        kh, kw = self.kernel_size
+        K = x.shape[1] * kh * kw  # C * kh * kw
+        if K % 16 != 0 or self.out_channels % 16 != 0:
+            # Fallback secara otomatis ke baseline precision jika bentuk matriks tidak sejajar (e.g., input layer dengan C=3)
+            return super().forward(x)
+
         try:
             # 1. Get input dimensions and setup parameters
             N, C, H, W = x.shape
-            kh, kw = self.kernel_size
             ph, pw = self.padding
             sh, sw = self.stride
             dh, dw = self.dilation
@@ -89,6 +97,10 @@ class NativeLinear(nn.Linear):
     def forward(self, x):
         # Fallback to standard Linear if not on CUDA or FP8 dtype is not configured
         if not x.is_cuda or self.dtype_fwd is None:
+            return super().forward(x)
+
+        # FP8 cuBLAS Alignment check: in_features and out_features must be divisible by 16
+        if self.in_features % 16 != 0 or self.out_features % 16 != 0:
             return super().forward(x)
 
         try:
