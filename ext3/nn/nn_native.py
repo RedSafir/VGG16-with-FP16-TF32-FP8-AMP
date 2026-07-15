@@ -22,7 +22,6 @@ class NativeConv2d(nn.Conv2d):
         kh, kw = self.kernel_size
         K = x.shape[1] * kh * kw  # C * kh * kw
         if K % 16 != 0 or self.out_channels % 16 != 0:
-            # Fallback secara otomatis ke baseline precision jika bentuk matriks tidak sejajar (e.g., input layer dengan C=3)
             return super().forward(x)
 
         try:
@@ -65,9 +64,9 @@ class NativeConv2d(nn.Conv2d):
             scale_a_inv = (1.0 / scale_a).view(1)
             scale_b_inv = (1.0 / scale_b).view(1)
 
-            # 4. Execute scaled MM
+            # 4. Execute scaled MM (dynamically handle single tensor vs tuple return value)
             bias_val = self.bias if self.bias is not None else None
-            out_gemm, _ = torch._scaled_mm(
+            res = torch._scaled_mm(
                 mat_a_fp8,
                 mat_b_fp8,
                 scale_a=scale_a_inv,
@@ -75,6 +74,11 @@ class NativeConv2d(nn.Conv2d):
                 bias=bias_val,
                 out_dtype=x.dtype
             )
+            
+            if isinstance(res, tuple):
+                out_gemm = res[0]
+            else:
+                out_gemm = res
 
             # 5. Reshape 2D GEMM output back to 4D Conv format: (N, out_channels, out_h, out_w)
             out = out_gemm.reshape(N, L, self.out_channels).transpose(1, 2).reshape(N, self.out_channels, out_h, out_w)
@@ -119,9 +123,9 @@ class NativeLinear(nn.Linear):
             scale_x_inv = (1.0 / scale_x).view(1)
             scale_w_inv = (1.0 / scale_w).view(1)
 
-            # 2. Execute scaled MM (weight transpose passed as mat2)
+            # 2. Execute scaled MM (dynamically handle single tensor vs tuple return value)
             bias_val = self.bias if self.bias is not None else None
-            out, _ = torch._scaled_mm(
+            res = torch._scaled_mm(
                 x_fp8,
                 w_fp8.t(),
                 scale_a=scale_x_inv,
@@ -129,6 +133,12 @@ class NativeLinear(nn.Linear):
                 bias=bias_val,
                 out_dtype=x.dtype
             )
+            
+            if isinstance(res, tuple):
+                out = res[0]
+            else:
+                out = res
+                
             return out
 
         except Exception as e:
