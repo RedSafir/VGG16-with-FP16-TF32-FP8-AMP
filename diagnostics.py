@@ -30,23 +30,26 @@ def warmup_gpu():
         _ = dummy @ dummy
     torch.cuda.synchronize()
 
-# Time measurement helper
+# Time measurement helper with exception handling
 def measure_time_ms(fn, num_iters: int = 100) -> float:
-    # Warmup
-    for _ in range(20):
-        fn()
-    torch.cuda.synchronize()
-    
-    start_event = torch.cuda.Event(enable_timing=True)
-    end_event = torch.cuda.Event(enable_timing=True)
-    
-    start_event.record()
-    for _ in range(num_iters):
-        fn()
-    end_event.record()
-    
-    torch.cuda.synchronize()
-    return start_event.elapsed_time(end_event) / num_iters
+    try:
+        # Warmup
+        for _ in range(20):
+            fn()
+        torch.cuda.synchronize()
+        
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        start_event.record()
+        for _ in range(num_iters):
+            fn()
+        end_event.record()
+        
+        torch.cuda.synchronize()
+        return start_event.elapsed_time(end_event) / num_iters
+    except Exception as e:
+        return float('inf')
 
 # 1. GEMM Microbenchmarks
 def run_gemm_diagnostics():
@@ -88,10 +91,14 @@ def run_gemm_diagnostics():
         bf16_time = measure_time_ms(run_bf16)
         fp8_time = measure_time_ms(run_fp8)
         
-        speedup = bf16_time / fp8_time if fp8_time > 0 else 0
-        print(f"  BF16 matmul time : {bf16_time:.4f} ms")
-        print(f"  FP8 scaled_mm time: {fp8_time:.4f} ms")
-        print(f"  Speedup           : {speedup:.2f}x ({'Faster' if speedup > 1.0 else 'Slower'})")
+        if fp8_time == float('inf'):
+            print(f"  BF16 matmul time : {bf16_time:.4f} ms")
+            print(f"  FP8 scaled_mm time: FAILED (e.g., dimensions not divisible by 16 constraint)")
+        else:
+            speedup = bf16_time / fp8_time if fp8_time > 0 else 0
+            print(f"  BF16 matmul time : {bf16_time:.4f} ms")
+            print(f"  FP8 scaled_mm time: {fp8_time:.4f} ms")
+            print(f"  Speedup           : {speedup:.2f}x ({'Faster' if speedup > 1.0 else 'Slower'})")
 
 # 2. Conv2d Microbenchmarks
 def run_conv_diagnostics():
@@ -115,7 +122,6 @@ def run_conv_diagnostics():
             return F.conv2d(x_bf16, w_bf16, stride=stride, padding=padding)
             
         # FP8 Conv2d via im2col (unfold) + scaled_mm
-        # We need to replicate the exact steps taken in layers.py
         def run_fp8_conv():
             # Spatial unfolding
             x_unfold = F.unfold(x_bf16, kernel_size=(kh, kw), padding=padding, stride=stride)
@@ -139,29 +145,40 @@ def run_conv_diagnostics():
             return out
 
         # Measure memory overhead
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats(device)
-        mem_start = torch.cuda.memory_allocated(device)
-        _ = run_bf16_conv()
-        mem_bf16 = torch.cuda.max_memory_allocated(device) - mem_start
-        
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats(device)
-        mem_start = torch.cuda.memory_allocated(device)
-        _ = run_fp8_conv()
-        mem_fp8 = torch.cuda.max_memory_allocated(device) - mem_start
+        mem_bf16 = 0
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats(device)
+            mem_start = torch.cuda.memory_allocated(device)
+            _ = run_bf16_conv()
+            mem_bf16 = torch.cuda.max_memory_allocated(device) - mem_start
+        except Exception as e:
+            pass
+            
+        mem_fp8 = 0
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats(device)
+            mem_start = torch.cuda.memory_allocated(device)
+            _ = run_fp8_conv()
+            mem_fp8 = torch.cuda.max_memory_allocated(device) - mem_start
+        except Exception as e:
+            pass
 
         # Run timings
         bf16_time = measure_time_ms(run_bf16_conv)
         fp8_time = measure_time_ms(run_fp8_conv)
         
-        speedup = bf16_time / fp8_time if fp8_time > 0 else 0
-        mem_overhead_ratio = mem_fp8 / mem_bf16 if mem_bf16 > 0 else 0
-        
-        print(f"  BF16 Conv time  : {bf16_time:.4f} ms (Peak Memory: {mem_bf16 / (1024*1024):.2f} MB)")
-        print(f"  FP8 Conv time   : {fp8_time:.4f} ms (Peak Memory: {mem_fp8 / (1024*1024):.2f} MB)")
-        print(f"  Speedup         : {speedup:.2f}x ({'Faster' if speedup > 1.0 else 'Slower'})")
-        print(f"  Memory Overhead : {mem_overhead_ratio:.2f}x ({mem_fp8 / (1024*1024):.2f} MB vs {mem_bf16 / (1024*1024):.2f} MB)")
+        if fp8_time == float('inf'):
+            print(f"  BF16 Conv time  : {bf16_time:.4f} ms (Peak Memory: {mem_bf16 / (1024*1024):.2f} MB)")
+            print(f"  FP8 Conv time   : FAILED (e.g., shape / hardware scaled_mm compatibility)")
+        else:
+            speedup = bf16_time / fp8_time if fp8_time > 0 else 0
+            mem_overhead_ratio = mem_fp8 / mem_bf16 if mem_bf16 > 0 else 0
+            print(f"  BF16 Conv time  : {bf16_time:.4f} ms (Peak Memory: {mem_bf16 / (1024*1024):.2f} MB)")
+            print(f"  FP8 Conv time   : {fp8_time:.4f} ms (Peak Memory: {mem_fp8 / (1024*1024):.2f} MB)")
+            print(f"  Speedup         : {speedup:.2f}x ({'Faster' if speedup > 1.0 else 'Slower'})")
+            print(f"  Memory Overhead : {mem_overhead_ratio:.2f}x ({mem_fp8 / (1024*1024):.2f} MB vs {mem_bf16 / (1024*1024):.2f} MB)")
 
 if __name__ == '__main__':
     warmup_gpu()
