@@ -35,7 +35,7 @@ def test_torchao_float8_linear():
     assert isinstance(model.fc2, nn.Linear) and not isinstance(model.fc2, Float8Linear), "fc2 should have been skipped"
 
     # Forward & Backward Pass Verification
-    x = torch.randn(4, 32, device=device)
+    x = torch.randn(64, 32, device=device)
     
     # Use bfloat16 autocast as recommended for Float8Linear training
     with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
