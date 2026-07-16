@@ -51,8 +51,8 @@ def run_fp16_cudnn_conv():
         )
         
         # Define symbolic tensors (using distinct names to avoid name collisions)
-        graph_x = graph.tensor_like(x_pt, name="graph_x")
-        graph_w = graph.tensor_like(w_pt, name="graph_w")
+        graph_x = graph.tensor_like(x_pt)
+        graph_w = graph.tensor_like(w_pt)
         
         # Add convolution node
         graph_y = graph.conv_fprop(
