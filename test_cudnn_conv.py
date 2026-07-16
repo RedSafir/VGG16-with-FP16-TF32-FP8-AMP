@@ -28,7 +28,7 @@ for attr in dir(cudnn.data_type):
 
 # Shape setup
 # Batch=1, C_in=16, C_out=16, H=8, W=8, Kernel=3x3, Padding=1, Stride=1
-N, C_in, C_out, H, W, kh, kw = 1, 16, 16, 8, 8, 3, 3
+N, C_in, C_out, H_global, W_global, kh, kw = 1, 16, 16, 8, 8, 3, 3
 padding = [1, 1]
 stride = [1, 1]
 dilation = [1, 1]
@@ -38,9 +38,9 @@ def run_fp16_cudnn_conv():
     print("\n--- 1. Testing FP16 cuDNN Graph Convolution ---")
     
     # We must use channels_last (NHWC) layout as preferred by cuDNN
-    x_pt = torch.randn(N, C_in, H, W, device=device, dtype=torch.float16).to(memory_format=torch.channels_last)
+    x_pt = torch.randn(N, C_in, H_global, W_global, device=device, dtype=torch.float16).to(memory_format=torch.channels_last)
     w_pt = torch.randn(C_out, C_in, kh, kw, device=device, dtype=torch.float16).to(memory_format=torch.channels_last)
-    y_pt = torch.empty(N, C_out, H, W, device=device, dtype=torch.float16).to(memory_format=torch.channels_last)
+    y_pt = torch.empty(N, C_out, H_global, W_global, device=device, dtype=torch.float16).to(memory_format=torch.channels_last)
     
     try:
         # Create cuDNN graph
@@ -50,19 +50,19 @@ def run_fp16_cudnn_conv():
             compute_data_type=cudnn.data_type.FLOAT
         )
         
-        # Define symbolic tensors
-        X = graph.tensor_like(x_pt, name="X")
-        W = graph.tensor_like(w_pt, name="W")
+        # Define symbolic tensors (using distinct names to avoid name collisions)
+        graph_x = graph.tensor_like(x_pt, name="graph_x")
+        graph_w = graph.tensor_like(w_pt, name="graph_w")
         
         # Add convolution node
-        Y = graph.conv_fprop(
-            image=X,
-            weight=W,
+        graph_y = graph.conv_fprop(
+            image=graph_x,
+            weight=graph_w,
             padding=padding,
             stride=stride,
             dilation=dilation
         )
-        Y.set_output(True)
+        graph_y.set_output(True)
         
         # Build graph plans using Heuristic Mode A
         print("Building cuDNN graph execution plans...")
@@ -74,7 +74,7 @@ def run_fp16_cudnn_conv():
         workspace = torch.empty(workspace_size, device=device, dtype=torch.uint8)
         
         # Execute
-        variant_pack = {X: x_pt, W: w_pt, Y: y_pt}
+        variant_pack = {graph_x: x_pt, graph_w: w_pt, graph_y: y_pt}
         print("Executing cuDNN graph...")
         graph.execute(variant_pack, workspace)
         torch.cuda.synchronize()
@@ -106,7 +106,7 @@ def run_fp8_cudnn_conv():
         
     try:
         # Create input tensors in float16 first
-        x_pt_f16 = torch.randn(N, C_in, H, W, device=device, dtype=torch.float16).to(memory_format=torch.channels_last)
+        x_pt_f16 = torch.randn(N, C_in, H_global, W_global, device=device, dtype=torch.float16).to(memory_format=torch.channels_last)
         w_pt_f16 = torch.randn(C_out, C_in, kh, kw, device=device, dtype=torch.float16).to(memory_format=torch.channels_last)
         
         # Cast to FP8 (float8_e4m3fn)
@@ -114,7 +114,7 @@ def run_fp8_cudnn_conv():
         w_pt_fp8 = w_pt_f16.clamp(-448.0, 448.0).to(torch.float8_e4m3fn)
         
         # Output will be collected in float16
-        y_pt_f16 = torch.empty(N, C_out, H, W, device=device, dtype=torch.float16).to(memory_format=torch.channels_last)
+        y_pt_f16 = torch.empty(N, C_out, H_global, W_global, device=device, dtype=torch.float16).to(memory_format=torch.channels_last)
         
         # Create cuDNN graph specifying FP8 input and HALF output
         graph = cudnn.pygraph(
@@ -124,32 +124,31 @@ def run_fp8_cudnn_conv():
         )
         
         # Define tensors manually to ensure correct type matching
-        X = graph.tensor(
-            name="X",
+        graph_x = graph.tensor(
+            name="graph_x",
             dim=list(x_pt_fp8.shape),
             stride=list(x_pt_fp8.stride()),
             data_type=cudnn.data_type.FP8_E4M3
         )
-        W = graph.tensor(
-            name="W",
+        graph_w = graph.tensor(
+            name="graph_w",
             dim=list(w_pt_fp8.shape),
             stride=list(w_pt_fp8.stride()),
             data_type=cudnn.data_type.FP8_E4M3
         )
         
         # Add convolution
-        # We specify compute data type as FLOAT for accumulation
-        Y = graph.conv_fprop(
-            image=X,
-            weight=W,
+        graph_y = graph.conv_fprop(
+            image=graph_x,
+            weight=graph_w,
             padding=padding,
             stride=stride,
             dilation=dilation
         )
         
         # Explicitly set the output data type of Y to HALF so we can collect it in y_pt_f16
-        Y.set_data_type(cudnn.data_type.HALF)
-        Y.set_output(True)
+        graph_y.set_data_type(cudnn.data_type.HALF)
+        graph_y.set_output(True)
         
         print("Building cuDNN FP8 graph execution plans...")
         graph.build([cudnn.heur_mode.A])
@@ -159,7 +158,7 @@ def run_fp8_cudnn_conv():
         workspace = torch.empty(workspace_size, device=device, dtype=torch.uint8)
         
         # Execute
-        variant_pack = {X: x_pt_fp8, W: w_pt_fp8, Y: y_pt_f16}
+        variant_pack = {graph_x: x_pt_fp8, graph_w: w_pt_fp8, graph_y: y_pt_f16}
         print("Executing cuDNN FP8 graph...")
         graph.execute(variant_pack, workspace)
         torch.cuda.synchronize()
