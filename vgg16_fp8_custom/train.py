@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import time
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 from .model import VGG16_FP8
 from .utils import CustomDynamicLossScaler
 
@@ -122,6 +122,7 @@ def run_training(model: nn.Module, train_loader: torch.utils.data.DataLoader,
         if device.type == 'cuda':
             peak_memory = torch.cuda.max_memory_allocated(device) / (1024 * 1024)
             vram_str = f" - Peak VRAM: {peak_memory:.2f} MB"
+            history.setdefault('vram_usage', []).append(peak_memory)
             
         print(f"Epoch [{epoch}/{epochs}] - Time: {epoch_time:.2f}s{vram_str} - "
               f"Train Loss: {train_loss:.4f} - Train Acc: {train_acc:.2f}% - "
@@ -129,4 +130,4 @@ def run_training(model: nn.Module, train_loader: torch.utils.data.DataLoader,
 
     return history
 
-from typing import Optional
+

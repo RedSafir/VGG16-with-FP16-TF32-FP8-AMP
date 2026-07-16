@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple
+import math
+from typing import Optional, Tuple, Union
 from .scaling import FP8Config, DelayedScalingManager
 
 class FP8LinearFunction(torch.autograd.Function):
@@ -284,4 +285,4 @@ class FP8Conv2d(nn.Module):
             self.scaling_manager, self.name, self.fallback_mode
         )
 
-import math
+
