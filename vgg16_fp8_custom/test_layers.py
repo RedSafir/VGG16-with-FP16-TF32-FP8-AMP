@@ -1,91 +1,53 @@
 import torch
 import torch.nn as nn
-from .layers import FP8Linear, FP8Conv2d
-from .scaling import DelayedScalingManager, FP8Config
+from vgg16_fp8_custom.model import convert_model_to_fp8
 
-def test_fp8_linear():
-    print("Testing FP8Linear...")
+def test_torchao_float8_linear():
+    print("Testing torchao Float8Linear integration...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    scaling_manager = DelayedScalingManager()
 
-    # Create dummy data
-    x = torch.randn(4, 8, device=device, requires_grad=True)
+    # Create dummy model with linear layers (some divisible by 16, some not)
+    class DummyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc1 = nn.Linear(32, 64)   # Divisible by 16 -> should convert
+            self.fc2 = nn.Linear(64, 10)   # 10 is not divisible by 16 -> should skip
+
+        def forward(self, x):
+            return self.fc2(torch.relu(self.fc1(x)))
+
+    model = DummyModel().to(device)
     
-    # Initialize FP8Linear
-    linear = FP8Linear(
-        in_features=8, 
-        out_features=4, 
-        bias=True, 
-        scaling_manager=scaling_manager, 
-        name="test_linear", 
-        fallback_mode=True
-    ).to(device)
+    # Check initial types
+    assert isinstance(model.fc1, nn.Linear)
+    assert isinstance(model.fc2, nn.Linear)
 
-    # Forward pass
-    out = linear(x)
-    print(f"Forward output shape: {out.shape} (Expected: [4, 4])")
-    assert out.shape == (4, 4), "Output shape mismatch in FP8Linear forward"
+    # Convert model to FP8 via torchao helper
+    convert_model_to_fp8(model)
 
-    # Backward pass
-    loss = out.sum()
-    loss.backward()
+    # Verify types after conversion
+    from torchao.float8 import Float8Linear
     
-    print(f"Input grad shape: {x.grad.shape if x.grad is not None else None} (Expected: [4, 8])")
-    print(f"Weight grad shape: {linear.weight.grad.shape if linear.weight.grad is not None else None} (Expected: [4, 8])")
+    print(f"fc1 class after conversion: {model.fc1.__class__.__name__} (Expected: Float8Linear)")
+    print(f"fc2 class after conversion: {model.fc2.__class__.__name__} (Expected: Linear)")
+
+    assert isinstance(model.fc1, Float8Linear), "fc1 was not converted to Float8Linear"
+    assert isinstance(model.fc2, nn.Linear) and not isinstance(model.fc2, Float8Linear), "fc2 should have been skipped"
+
+    # Forward & Backward Pass Verification
+    x = torch.randn(4, 32, device=device)
     
-    assert x.grad is not None, "Input gradient is None"
-    assert linear.weight.grad is not None, "Weight gradient is None"
-    assert linear.bias.grad is not None, "Bias gradient is None"
-    
-    # Check if scales were tracked
-    assert f"test_linear_x_fwd" in scaling_manager.current_scale, "Scaling manager missed input forward scale"
-    assert f"test_linear_w_fwd" in scaling_manager.current_scale, "Scaling manager missed weight forward scale"
-    assert f"test_linear_grad_bwd" in scaling_manager.current_scale, "Scaling manager missed backward gradient scale"
-    print("FP8Linear tests passed successfully!\n")
-
-
-def test_fp8_conv2d():
-    print("Testing FP8Conv2d...")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    scaling_manager = DelayedScalingManager()
-
-    # Create dummy data
-    x = torch.randn(2, 3, 16, 16, device=device, requires_grad=True)
-
-    # Initialize FP8Conv2d
-    conv = FP8Conv2d(
-        in_channels=3, 
-        out_channels=8, 
-        kernel_size=3, 
-        padding=1, 
-        bias=True, 
-        scaling_manager=scaling_manager, 
-        name="test_conv", 
-        fallback_mode=True
-    ).to(device)
-
-    # Forward pass
-    out = conv(x)
-    print(f"Forward output shape: {out.shape} (Expected: [2, 8, 16, 16])")
-    assert out.shape == (2, 8, 16, 16), "Output shape mismatch in FP8Conv2d forward"
-
-    # Backward pass
-    loss = out.sum()
+    # Use bfloat16 autocast as recommended for Float8Linear training
+    with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+        out = model(x)
+        loss = out.sum()
+        
     loss.backward()
 
-    print(f"Input grad shape: {x.grad.shape if x.grad is not None else None} (Expected: [2, 3, 16, 16])")
-    print(f"Weight grad shape: {conv.weight.grad.shape if conv.weight.grad is not None else None} (Expected: [8, 3, 3, 3])")
-
-    assert x.grad is not None, "Input gradient is None"
-    assert conv.weight.grad is not None, "Weight gradient is None"
-    assert conv.bias.grad is not None, "Bias gradient is None"
-
-    # Check if scales were tracked
-    assert f"test_conv_x_fwd" in scaling_manager.current_scale, "Scaling manager missed input forward scale"
-    assert f"test_conv_w_fwd" in scaling_manager.current_scale, "Scaling manager missed weight forward scale"
-    assert f"test_conv_grad_bwd" in scaling_manager.current_scale, "Scaling manager missed backward gradient scale"
-    print("FP8Conv2d tests passed successfully!\n")
+    print(f"fc1 weight grad calculated: {model.fc1.weight.grad is not None}")
+    assert model.fc1.weight.grad is not None, "Gradient of fc1 weight is None after backward pass"
+    
+    print("torchao Float8Linear integration tests passed successfully!\n")
 
 if __name__ == '__main__':
-    test_fp8_linear()
-    test_fp8_conv2d()
+    test_torchao_float8_linear()

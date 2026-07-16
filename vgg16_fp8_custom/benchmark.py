@@ -6,7 +6,7 @@ import numpy as np
 import time
 from typing import Dict, Any
 
-from .model import VGG16_FP8
+from .model import VGG16_FP8, convert_model_to_fp8
 from .train import run_training
 from .utils import check_gpu_fp8_support
 
@@ -51,56 +51,64 @@ def run_benchmark():
     results = {}
 
     # Define benchmark configs
-    configs = [
-        # (precision, use_fp8_module, use_native_hpu_or_simulated_fallback)
-        ('fp32', False, True),
-        ('bf16', False, True),
-        ('fp8', True, not has_native_fp8)  # fallback=True if has_native_fp8=False
-    ]
+    configs = ['fp32', 'bf16', 'fp8']
 
-    for precision, use_fp8, fallback_mode in configs:
+    for precision in configs:
         print(f"\n--- Running {precision.upper()} Training Run ---")
         
-        # Initialize model
-        model = VGG16_FP8(
-            num_classes=10, 
-            use_fp8=use_fp8, 
-            batch_norm=True, 
-            fallback_mode=fallback_mode
-        ).to(device)
+        # Initialize standard VGG16 model
+        model = VGG16_FP8(num_classes=10, batch_norm=True).to(device)
+
+        # Apply torchao conversion if precision is fp8
+        if precision == 'fp8':
+            print("[INFO] Converting FC layers to FP8 using torchao...")
+            convert_model_to_fp8(model)
+
+        # Identify which layers are Float8Linear
+        from torchao.float8 import Float8Linear
+        fp8_layers = [name for name, m in model.named_modules() if isinstance(m, Float8Linear)]
+        fp8_layers_str = ", ".join(fp8_layers) if fp8_layers else "None"
+        print(f"[INFO] FP8 layers active: {fp8_layers_str}")
+
+        # Compile model to trigger Triton/CUTLASS kernel fusion
+        try:
+            print("[INFO] Compiling model with torch.compile...")
+            compiled_model = torch.compile(model)
+        except Exception as e:
+            print(f"[WARNING] torch.compile failed/unavailable ({e}). Running in eager mode.")
+            compiled_model = model
 
         # Run training
         history = run_training(
-            model=model,
+            model=compiled_model,
             train_loader=train_loader,
             test_loader=test_loader,
             epochs=epochs,
             lr=lr,
             device=device,
-            precision=precision,
-            fallback_mode=fallback_mode
+            precision=precision
         )
 
+        history['fp8_layers'] = fp8_layers_str
         results[precision] = history
 
     # 4. Summarize results
-    print("\n" + "=" * 80)
-    print(f"{'PRECISION':<12} | {'FINAL LOSS':<12} | {'FINAL ACC':<12} | {'AVG TIME/EPOCH':<15} | {'PEAK VRAM (EST)':<15}")
-    print("-" * 80)
+    print("\n" + "=" * 115)
+    print(f"{'PRECISION':<12} | {'FINAL LOSS':<12} | {'FINAL ACC':<12} | {'AVG TIME/EPOCH':<15} | {'PEAK VRAM (EST)':<15} | {'FP8 LAYERS USED':<25}")
+    print("-" * 115)
     
     for precision, history in results.items():
         avg_time = np.mean(history['epoch_times'])
         final_loss = history['train_loss'][-1]
         final_acc = history['train_acc'][-1]
-        # Peak memory is estimated. Since we use small subset, it's relative.
         vram_display = "N/A"
         if device.type == 'cuda':
-            # PyTorch tracks max memory. We show the max memory encountered across epoch runtimes.
-            vram_display = f"{np.max(history.get('vram_usage', [0.0])):.2f} MB" if 'vram_usage' in history else "Tracked Above"
+            vram_display = f"{np.max(history.get('vram_usage', [0.0])):.2f} MB" if 'vram_usage' in history and len(history['vram_usage']) > 0 else "Tracked Above"
             
-        print(f"{precision.upper():<12} | {final_loss:<12.4f} | {final_acc:<11.2f}% | {avg_time:<13.2f}s | {vram_display:<15}")
+        fp8_used = history.get('fp8_layers', 'None')
+        print(f"{precision.upper():<12} | {final_loss:<12.4f} | {final_acc:<11.2f}% | {avg_time:<13.2f}s | {vram_display:<15} | {fp8_used:<25}")
     
-    print("=" * 80)
+    print("=" * 115)
     print("\nBenchmark completed successfully!")
 
 if __name__ == '__main__':
