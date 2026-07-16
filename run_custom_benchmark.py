@@ -4,7 +4,7 @@ import os
 # Add the current directory to sys.path to ensure local imports resolve correctly
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
-from vgg16_fp8_custom.test_layers import test_fp8_linear, test_fp8_conv2d
+from vgg16_fp8_custom.test_layers import test_torchao_float8_linear
 from vgg16_fp8_custom.benchmark import run_benchmark
 
 def main():
@@ -13,11 +13,10 @@ def main():
     print("==========================================================\n")
 
     # 1. Run Unit Tests
-    print(">>> Running Unit Tests for Custom FP8 Layers...")
+    print(">>> Running Unit Tests for torchao Float8 Integration...")
     try:
-        test_fp8_linear()
-        test_fp8_conv2d()
-        print(">>> [OK] All FP8 Layer unit tests passed successfully!\n")
+        test_torchao_float8_linear()
+        print(">>> [OK] torchao Float8 unit tests passed successfully!\n")
     except Exception as e:
         print(f">>> [FAIL] Unit tests encountered an error: {e}")
         import traceback
