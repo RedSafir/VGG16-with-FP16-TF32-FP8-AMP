@@ -30,8 +30,8 @@ def run_benchmark():
     ])
 
     print("[DATA] Loading CIFAR-10 dataset...")
-    full_train = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
-    full_test = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+    full_train = torchvision.datasets.CIFAR10(root='././dataset/cifar10', train=True, download=True, transform=transform)
+    full_test = torchvision.datasets.CIFAR10(root='././dataset/cifar10', train=False, download=True, transform=transform)
 
     # Use subset for benchmark speed
     train_subset_idx = list(range(2000))
