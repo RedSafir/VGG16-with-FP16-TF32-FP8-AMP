@@ -70,12 +70,19 @@ def run_benchmark():
         fp8_layers_str = ", ".join(fp8_layers) if fp8_layers else "None"
         print(f"[INFO] FP8 layers active: {fp8_layers_str}")
 
-        # Compile model to trigger Triton/CUTLASS kernel fusion
-        try:
-            print("[INFO] Compiling model with torch.compile...")
-            compiled_model = torch.compile(model)
-        except Exception as e:
-            print(f"[WARNING] torch.compile failed/unavailable ({e}). Running in eager mode.")
+        # We disable torch.compile by default to avoid known PyTorch 2.11 Inductor backend bugs
+        # (e.g. TypeError: '_InsertPoint' object is not iterable).
+        # If your PyTorch version has a stable compiler, feel free to set compile_model to True.
+        compile_model = False
+        if compile_model:
+            try:
+                print("[INFO] Compiling model with torch.compile...")
+                compiled_model = torch.compile(model)
+            except Exception as e:
+                print(f"[WARNING] torch.compile failed/unavailable ({e}). Running in eager mode.")
+                compiled_model = model
+        else:
+            print("[INFO] Running in Eager Mode (torch.compile disabled).")
             compiled_model = model
 
         # Run training
