@@ -28,7 +28,7 @@ Berdasarkan temuan diagnostik di atas, arsitektur VGG16 dioptimalkan dengan stra
 3. **Filter Layer**: Hanya layer FC yang dimensinya habis dibagi 16 yang dikonversi (`fc1` dan `fc2`). Layer output (`fc3` ke 10 kelas) tetap menggunakan BF16.
 
 > [!NOTE]
-> Lambatnya operasi konvolusi FP8 via `im2col` dan belum optimalnya `scaled_mm` pada shape tertentu merupakan **batasan dari kernel CUTLASS / scaled_mm** untuk arsitektur Blackwell (`sm_120`) pada tanggal rilis PyTorch 2.11. Ini **bukan bug** pada kode program. Performa FP8 kemungkinan besar akan meningkat pada rilis PyTorch dan `torchao` mendatang seiring dengan matangnya dukungan untuk `sm_120`. Evaluasi berkala disarankan.
+> Operasi konvolusi FP8 native secara teori dapat dijalankan tanpa `im2col` melalui pustaka **`cudnn-frontend`** (yang mendukung grafik komputasi FP8 sejak cuDNN 8.6+ dan dioptimalkan untuk Blackwell di cuDNN 9.7+). Namun, karena integrasi `cudnn-frontend` Python API belum teruji dan terverifikasi kestabilannya pada konfigurasi kartu grafis kelas konsumen Blackwell (`sm_120`) di lingkungan kerja ini, kami memilih **BF16** sebagai alternatif konvolusi yang stabil, aman, dan berkinerja tinggi. Evaluasi berkala terhadap performa `cudnn-frontend` di GPU Anda sangat disarankan seiring matangnya ekosistem driver dan pustaka CUDA.
 
 ---
 
