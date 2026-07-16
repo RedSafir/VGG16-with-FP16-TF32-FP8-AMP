@@ -65,7 +65,7 @@ def run_benchmark():
             convert_model_to_fp8(model)
 
         # Identify which layers are Float8Linear
-        from torchao.float8 import Float8Linear
+        from torchao.float8.float8_linear import Float8Linear
         fp8_layers = [name for name, m in model.named_modules() if isinstance(m, Float8Linear)]
         fp8_layers_str = ", ".join(fp8_layers) if fp8_layers else "None"
         print(f"[INFO] FP8 layers active: {fp8_layers_str}")

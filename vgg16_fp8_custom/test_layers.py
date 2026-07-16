@@ -26,7 +26,7 @@ def test_torchao_float8_linear():
     convert_model_to_fp8(model)
 
     # Verify types after conversion
-    from torchao.float8 import Float8Linear
+    from torchao.float8.float8_linear import Float8Linear
     
     print(f"fc1 class after conversion: {model.fc1.__class__.__name__} (Expected: Float8Linear)")
     print(f"fc2 class after conversion: {model.fc2.__class__.__name__} (Expected: Linear)")
